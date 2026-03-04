@@ -6,6 +6,8 @@ Machine learning strategy for ETHUSDT on 30-minute bars. Predicts 2-hour (4-bar)
 
 ## Results
 
+![Equity Curve](assets/equity_curve.png)
+
 Best strategy: **LightGBM + ElasticNet ensemble** (z-scored mean of predictions)
 
 | Strategy | Sharpe | Annual Return | Max Drawdown |
