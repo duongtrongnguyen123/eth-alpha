@@ -35,6 +35,14 @@ def generate_features(df_raw, feature_cols, HORIZON_BARS):
     # RETURN 2-BAR — only computed when requested
     if 'return_2' in feature_cols: df['return_2'] = df['close'].pct_change(2)
 
+    # HORIZON RETURN — matches prediction target, computed when requested
+    if 'return_H' in feature_cols:
+        df['return_H'] = df['close'].pct_change(HORIZON_BARS)
+    if 'return_H_lag48' in feature_cols:
+        df['return_H_lag48'] = df['close'].pct_change(HORIZON_BARS).shift(48)
+    if 'return_H_lag96' in feature_cols:
+        df['return_H_lag96'] = df['close'].pct_change(HORIZON_BARS).shift(96)
+
     # VOLATILITY
     df['volatility_48']     = df['return_1'].rolling(48).std()
     df['max_volatility_480'] = (

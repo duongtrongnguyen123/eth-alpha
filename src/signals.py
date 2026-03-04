@@ -33,6 +33,68 @@ def threshold_signals(X_test, y_pred, threshold, bias):
     return signals
 
 
+def build_position_dynamic(preds, entry_thr, min_hold, bias=0.0,
+                           exit_preds=None, exit_bias=0.0) -> pd.Series:
+    """
+    Dynamic hold using raw predictions:
+      - Enter long  when pred >  entry_thr
+      - Enter short when pred < -entry_thr + bias
+      - Hold for at least min_hold bars
+      - After min_hold, exit when exit signal is opposite AND strong enough:
+          long  exit: exit_pred < -exit_bias
+          short exit: exit_pred >  exit_bias
+        where exit_bias = mean of exit model training predictions (drift offset).
+        If exit_preds is None, uses entry preds with exit_bias=0.
+
+    Args:
+        preds:      Series of raw entry model predictions (4-bar ensemble).
+        entry_thr:  Absolute prediction threshold to enter a trade.
+        min_hold:   Minimum bars to hold before checking exit.
+        bias:       Drift offset applied to the short entry threshold.
+        exit_preds: Optional Series of exit model predictions (e.g. return_1).
+        exit_bias:  Mean of exit model training predictions — exit only when
+                    the exit signal magnitude exceeds this drift level.
+
+    Returns:
+        Series of positions (+1, -1, 0).
+    """
+    exit_src = exit_preds if exit_preds is not None else preds
+
+    idx = preds.index
+    pos = pd.Series(0, index=idx, dtype=int)
+
+    i = 0
+    L = len(idx)
+    while i < L:
+        p = preds.iloc[i]
+        if p > entry_thr:
+            s = 1
+        elif p < -entry_thr + bias:
+            s = -1
+        else:
+            i += 1
+            continue
+
+        entry = i + 1
+        if entry >= L:
+            break
+
+        j = entry
+        while j < L:
+            pos.iloc[j] = s
+            if (j - entry) >= min_hold - 1:
+                ep = exit_src.iloc[j]
+                # exit only when opposite sign AND magnitude > drift bias
+                if (s == 1 and ep < -exit_bias) or (s == -1 and ep > exit_bias):
+                    i = j   # re-check bar j for new entry
+                    break
+            j += 1
+        else:
+            i = L   # end of data
+
+    return pos
+
+
 def build_position_holdN(signals, HORIZON_BARS) -> pd.Series:
     """
     Convert per-bar signals (-1/0/+1) into a position series that:

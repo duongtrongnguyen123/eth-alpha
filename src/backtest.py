@@ -25,7 +25,7 @@ def decile_analysis(pred, y, n_bins=10):
     return df.groupby("decile")["y"].agg(["count", "mean", "std"])
 
 
-def evaluate_holdN(df_features, X_test, signals, HORIZON_BARS):
+def evaluate_holdN(df_features, X_test, signals, HORIZON_BARS, cost_bps=0):
     """
     Builds positions from signals, then computes per-bar strategy returns,
     equity curve, Sharpe ratio, CAGR, max drawdown, and win rate.
@@ -35,6 +35,7 @@ def evaluate_holdN(df_features, X_test, signals, HORIZON_BARS):
         X_test: Validation feature DataFrame (defines the evaluation period).
         signals: Series of signals (+1, -1, 0) aligned to X_test index.
         HORIZON_BARS: Number of bars each trade is held.
+        cost_bps: Transaction cost in basis points per side (default 0).
 
     Returns:
         Tuple of (strategy_returns, equity_curve) as pandas Series.
@@ -42,7 +43,12 @@ def evaluate_holdN(df_features, X_test, signals, HORIZON_BARS):
     r1       = df_features.loc[X_test.index, 'return_1'].astype(float)
     position = build_position_holdN(signals, HORIZON_BARS)
 
-    strategy_returns = (position * r1).dropna()
+    # cost at each entry/exit: |position change| * cost_per_side
+    cost_per_side    = cost_bps / 10_000
+    pos_changes      = position.diff().fillna(position.abs()).abs()
+    cost_series      = pos_changes * cost_per_side
+
+    strategy_returns = (position * r1 - cost_series).dropna()
     buyhold_returns  = r1.loc[strategy_returns.index]
 
     equity_curve   = (1 + strategy_returns).cumprod()
