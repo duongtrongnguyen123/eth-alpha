@@ -95,6 +95,55 @@ def build_position_dynamic(preds, entry_thr, min_hold, bias=0.0,
     return pos
 
 
+def build_position_filtered(preds, entry_thr, min_hold, filter_series, filter_thr, bias=0.0):
+    """
+    Enhanced Signal Choosing:
+    Only enter if prediction > threshold AND filter_series > filter_thr.
+    Exits dynamically when the prediction flips sign.
+
+    Args:
+        preds: Series of raw model predictions.
+        entry_thr: Absolute threshold for entry.
+        min_hold: Minimum bars to hold before checking exit.
+        filter_series: Secondary series (e.g. Efficiency Ratio) to filter entries.
+        filter_thr: Threshold for the filter_series.
+        bias: Drift offset for short entries.
+    """
+    idx = preds.index
+    pos = pd.Series(0, index=idx, dtype=int)
+
+    i = 0
+    L = len(idx)
+    while i < L:
+        p = preds.iloc[i]
+        f = filter_series.iloc[i]
+        
+        # ENTRY: Must pass prediction threshold AND efficiency filter
+        if p > entry_thr and f > filter_thr:
+            s = 1
+        elif p < -entry_thr + bias and f > filter_thr:
+            s = -1
+        else:
+            i += 1
+            continue
+
+        entry = i + 1
+        if entry >= L: break
+        
+        j = entry
+        while j < L:
+            pos.iloc[j] = s
+            # DYNAMIC EXIT: after min_hold, exit when prediction flips sign
+            if (j - entry) >= min_hold - 1:
+                if (s == 1 and preds.iloc[j] < 0) or (s == -1 and preds.iloc[j] > 0):
+                    i = j
+                    break
+            j += 1
+        else:
+            i = L
+    return pos
+
+
 def build_position_holdN(signals, HORIZON_BARS) -> pd.Series:
     """
     Convert per-bar signals (-1/0/+1) into a position series that:
