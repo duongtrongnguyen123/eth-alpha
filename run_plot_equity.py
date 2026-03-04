@@ -1,6 +1,7 @@
 """
 run_plot_equity.py
-Generate equity curve plot: Ensemble vs LightGBM vs ElasticNet vs Buy & Hold.
+Strategy improvement story plotted as equity curves:
+  No-fee ceiling → Dynamic hold (5bps) → ER > 0.6 filter (5bps) vs Buy & Hold
 Saves to assets/equity_curve.png for README embedding.
 """
 import yaml
@@ -8,7 +9,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from collections import defaultdict
 from sklearn.linear_model import ElasticNet
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -16,17 +16,26 @@ import lightgbm as lgb
 from pathlib import Path
 
 from src.features import generate_features, get_data
-from src.signals import threshold_signals, build_position_holdN
+from src.signals import (threshold_signals, build_position_holdN,
+                         build_position_dynamic, build_position_filtered)
 
 BARS_PER_YEAR = 365 * 24 * 2
+COST_BPS      = 5
+ER_N          = 10
+BEST_ER       = 0.6
 
 df_raw = pd.read_csv('data/ETHUSDT.csv', parse_dates=['timestamp'], index_col='timestamp')
 
-with open('configs/strategy_lgb.yaml') as f:    cfg_lgb = yaml.safe_load(f)
+with open('configs/strategy_lgb.yaml')    as f: cfg_lgb = yaml.safe_load(f)
 with open('configs/strategy_linear.yaml') as f: cfg_lin = yaml.safe_load(f)
 
 HORIZON_BARS = cfg_lgb['horizon_bars']
 N_FOLDS      = cfg_lgb['walk_forward']['n_folds']
+
+# Efficiency Ratio on full price series
+direction = df_raw['close'].diff(ER_N).abs()
+noise     = df_raw['close'].diff().abs().rolling(ER_N).sum().replace(0, np.nan)
+er_full   = (direction / noise).clip(0, 1)
 
 df_lgb, target_lgb = generate_features(df_raw, feature_cols=cfg_lgb['features'], HORIZON_BARS=HORIZON_BARS)
 df_lin, target_lin = generate_features(df_raw, feature_cols=cfg_lin['features'], HORIZON_BARS=HORIZON_BARS)
@@ -35,91 +44,131 @@ lgb_model = lgb.LGBMRegressor(
     n_estimators=100, learning_rate=0.05, max_depth=5,
     min_child_samples=100, reg_alpha=0.1, reg_lambda=0.1,
     random_state=42, verbose=-1)
-
 en_model = Pipeline([
     ('scaler', StandardScaler()),
     ('model',  ElasticNet(alpha=0.0001, l1_ratio=0.5, max_iter=5000))
 ])
 
-lgb_preds, en_preds = [], []
-lgb_signals_list, en_signals_list = [], []
-X_folds = []
+lgb_z_list, en_z_list, X_folds = [], [], []
+thr_list, bias_list             = [], []
+nofee_signals_list              = []
 
+print("Training 8 folds...")
 for k in range(N_FOLDS):
     i = k * 0.1
-    X_train_lgb, X_valid_lgb, y_train_lgb, _ = get_data(df_lgb, target_lgb, split_pos=[i, i+0.2, i+0.3])
-    X_train_lin, X_valid_lin, y_train_lin, _ = get_data(df_lin, target_lin, split_pos=[i, i+0.2, i+0.3])
+    X_tl, X_vl, y_tl, _ = get_data(df_lgb, target_lgb, split_pos=[i, i+0.2, i+0.3])
+    X_tn, X_vn, y_tn, _ = get_data(df_lin, target_lin, split_pos=[i, i+0.2, i+0.3])
 
-    lgb_model.fit(X_train_lgb, y_train_lgb)
-    en_model.fit(X_train_lin, y_train_lin)
+    lgb_model.fit(X_tl, y_tl)
+    en_model.fit(X_tn, y_tn)
 
-    lgb_pred_train = lgb_model.predict(X_train_lgb)
-    lgb_pred_valid = lgb_model.predict(X_valid_lgb)
-    en_pred_train  = en_model.predict(X_train_lin)
-    en_pred_valid  = en_model.predict(X_valid_lin)
+    lgb_ptr = lgb_model.predict(X_tl);  lgb_pv = lgb_model.predict(X_vl)
+    en_ptr  = en_model.predict(X_tn);   en_pv  = en_model.predict(X_vn)
 
-    # standalone signals
-    lgb_thr = np.quantile(np.abs(lgb_pred_train), 0.8)
-    lgb_sig = threshold_signals(X_valid_lgb, lgb_pred_valid, threshold=lgb_thr, bias=lgb_pred_train.mean())
-    en_thr  = np.quantile(np.abs(en_pred_train), 0.8)
-    en_sig  = threshold_signals(X_valid_lin, en_pred_valid, threshold=en_thr, bias=en_pred_train.mean())
+    # z-score per model using training stats
+    lgb_z_tr = (lgb_ptr - lgb_ptr.mean()) / (lgb_ptr.std() + 1e-9)
+    en_z_tr  = (en_ptr  - en_ptr.mean())  / (en_ptr.std()  + 1e-9)
 
-    lgb_signals_list.append(lgb_sig)
-    en_signals_list.append(en_sig)
+    thr_list.append((np.quantile(np.abs(lgb_z_tr), 0.95) +
+                     np.quantile(np.abs(en_z_tr),  0.95)) / 2)
+    bias_list.append((lgb_z_tr.mean() + en_z_tr.mean()) / 2)
 
-    # z-scored for ensemble
-    lgb_z = pd.Series((lgb_pred_valid - lgb_pred_train.mean()) / (lgb_pred_train.std() + 1e-9),
-                       index=X_valid_lgb.index)
-    en_z  = pd.Series((en_pred_valid  - en_pred_train.mean())  / (en_pred_train.std()  + 1e-9),
-                       index=X_valid_lin.index)
+    shared = X_vl.index.intersection(X_vn.index)
+    lgb_z_v = pd.Series((lgb_pv - lgb_ptr.mean()) / (lgb_ptr.std() + 1e-9), index=X_vl.index).loc[shared]
+    en_z_v  = pd.Series((en_pv  - en_ptr.mean())  / (en_ptr.std()  + 1e-9), index=X_vn.index).loc[shared]
+    lgb_z_list.append(lgb_z_v)
+    en_z_list.append(en_z_v)
+    X_folds.append(X_vl.loc[shared])
 
-    shared = X_valid_lgb.index.intersection(X_valid_lin.index)
-    lgb_preds.append(lgb_z.loc[shared])
-    en_preds.append(en_z.loc[shared])
-    X_folds.append(X_valid_lgb.loc[shared])
+    # no-fee fixed-hold signals (80th pctile threshold on training z)
+    mean_z_v   = (lgb_z_v + en_z_v) / 2
+    nofee_thr  = (np.quantile(np.abs(lgb_z_tr), 0.8) + np.quantile(np.abs(en_z_tr), 0.8)) / 2
+    nofee_bias = (lgb_z_tr.mean() + en_z_tr.mean()) / 2
+    nofee_sig  = threshold_signals(X_vl.loc[shared], mean_z_v.values,
+                                   threshold=nofee_thr, bias=nofee_bias)
+    nofee_signals_list.append(nofee_sig)
 
-# full OOS series
-X_all    = pd.concat(X_folds)
-lgb_full = pd.concat(lgb_preds)
-en_full  = pd.concat(en_preds)
-r1       = df_lgb.loc[X_all.index, 'return_1'].astype(float)
+X_all  = pd.concat(X_folds)
+mean_z = (pd.concat(lgb_z_list) + pd.concat(en_z_list)) / 2
+r1     = df_lgb.loc[X_all.index, 'return_1'].astype(float)
+thr    = float(np.mean(thr_list))
+bias   = float(np.mean(bias_list))
+er     = er_full.loc[X_all.index]
 
-def equity_from_signals(signals, r1):
+
+# ── equity helpers ─────────────────────────────────────────────────────────────
+def equity_nofee(signals):
     pos = build_position_holdN(signals, HORIZON_BARS)
-    sr  = (pos * r1).dropna()
-    return (1 + sr).cumprod()
+    ret = (pos * r1).dropna()
+    return (1 + ret).cumprod()
 
-# ensemble signals
-mean_z    = (lgb_full + en_full) / 2
-ens_thr   = np.quantile(np.abs(mean_z), 0.8)
-ens_sig   = threshold_signals(X_all, mean_z.values, threshold=ens_thr, bias=mean_z.mean())
-ens_eq    = equity_from_signals(ens_sig, r1)
+def equity_fee(pos, cost_bps=COST_BPS):
+    r1p     = r1.loc[pos.index]
+    changes = pos.diff().fillna(pos.abs()).abs()
+    ret     = (pos * r1p - changes * (cost_bps / 10_000)).dropna()
+    return (1 + ret).cumprod()
 
-lgb_sig_full = pd.concat(lgb_signals_list)
-lgb_eq       = equity_from_signals(lgb_sig_full, df_lgb.loc[lgb_sig_full.index, 'return_1'].astype(float))
+def sharpe_from_pos(pos, cost_bps=COST_BPS):
+    r1p     = r1.loc[pos.index]
+    changes = pos.diff().fillna(pos.abs()).abs()
+    ret     = (pos * r1p - changes * (cost_bps / 10_000)).dropna()
+    std     = ret.std()
+    return ret.mean() / std * np.sqrt(BARS_PER_YEAR) if std > 0 else np.nan
 
-en_sig_full  = pd.concat(en_signals_list)
-en_r1        = df_lin.loc[en_sig_full.index, 'return_1'].astype(float)
-en_eq        = equity_from_signals(en_sig_full, en_r1)
 
-bh_eq = (1 + r1).cumprod()
+# ── build all curves ───────────────────────────────────────────────────────────
+# 1. No-fee fixed hold — theoretical ceiling
+nofee_sig_full = pd.concat(nofee_signals_list)
+pos_nofee      = build_position_holdN(nofee_sig_full, HORIZON_BARS)
+nofee_eq       = equity_nofee(nofee_sig_full)
+sh_nofee       = sharpe_from_pos(pos_nofee, cost_bps=0)
 
-# ── plot ───────────────────────────────────────────────────────────────────
+# 2. Dynamic hold, no filter, 5 bps
+pos_dyn  = build_position_dynamic(mean_z, entry_thr=thr, min_hold=HORIZON_BARS, bias=bias)
+dyn_eq   = equity_fee(pos_dyn)
+sh_dyn   = sharpe_from_pos(pos_dyn)
+
+# 3. Dynamic hold + ER > 0.6, 5 bps
+pos_er   = build_position_filtered(mean_z, entry_thr=thr, min_hold=HORIZON_BARS,
+                                   filter_series=er, filter_thr=BEST_ER, bias=bias)
+er_eq    = equity_fee(pos_er)
+sh_er    = sharpe_from_pos(pos_er)
+
+# 4. Buy & Hold
+bh_eq    = (1 + r1).cumprod()
+sh_bh    = r1.mean() / r1.std() * np.sqrt(BARS_PER_YEAR)
+
+print(f"\nSharpe summary:")
+print(f"  No-fee ceiling:      {sh_nofee:.2f}")
+print(f"  Dynamic hold 5bps:   {sh_dyn:.2f}")
+print(f"  + ER>0.6 filter 5bps:{sh_er:.2f}")
+print(f"  Buy & Hold:          {sh_bh:.2f}")
+
+
+# ── plot ───────────────────────────────────────────────────────────────────────
 Path('assets').mkdir(exist_ok=True)
 
 fig, ax = plt.subplots(figsize=(12, 6))
 fig.patch.set_facecolor('#0f1117')
 ax.set_facecolor('#0f1117')
 
-ax.semilogy(ens_eq.index, ens_eq.values,   color='#00e5ff', linewidth=2.0, label='Ensemble (LGB + ElasticNet)  Sharpe 2.07')
-ax.semilogy(lgb_eq.index, lgb_eq.values,   color='#4fc3f7', linewidth=1.4, label='LightGBM  Sharpe 1.86', alpha=0.85)
-ax.semilogy(en_eq.index,  en_eq.values,    color='#81c784', linewidth=1.4, label='ElasticNet  Sharpe 1.94', alpha=0.85)
-ax.semilogy(bh_eq.index,  bh_eq.values,    color='#888888', linewidth=1.2, label='Buy & Hold  Sharpe 0.73', linestyle='--', alpha=0.7)
+ax.semilogy(nofee_eq.index, nofee_eq.values,
+            color='#607d8b', linewidth=1.2, linestyle=':',  alpha=0.75,
+            label=f'No-fee ceiling (fixed hold)  Sharpe {sh_nofee:.2f}')
+ax.semilogy(dyn_eq.index,   dyn_eq.values,
+            color='#4fc3f7', linewidth=1.5,
+            label=f'→ Dynamic hold · {COST_BPS} bps  Sharpe {sh_dyn:.2f}')
+ax.semilogy(er_eq.index,    er_eq.values,
+            color='#00e5ff', linewidth=2.0,
+            label=f'→ + ER > {BEST_ER} filter · {COST_BPS} bps  Sharpe {sh_er:.2f}')
+ax.semilogy(bh_eq.index,    bh_eq.values,
+            color='#888888', linewidth=1.2, linestyle='--', alpha=0.7,
+            label=f'Buy & Hold  Sharpe {sh_bh:.2f}')
 
-ax.set_title('ETHUSDT Strategy — Out-of-Sample Equity Curve (2021–2025)',
+ax.set_title('ETHUSDT Strategy — Improvement Story (2021–2025, Out-of-Sample)',
              color='white', fontsize=14, pad=14)
-ax.set_xlabel('Date', color='#aaaaaa', fontsize=11)
-ax.set_ylabel('Cumulative Return (log scale)', color='#aaaaaa', fontsize=11)
+ax.set_xlabel('Date',                            color='#aaaaaa', fontsize=11)
+ax.set_ylabel('Cumulative Return (log scale)',   color='#aaaaaa', fontsize=11)
 
 ax.tick_params(colors='#aaaaaa')
 ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
@@ -130,10 +179,10 @@ for spine in ax.spines.values():
 ax.grid(True, color='#222222', linewidth=0.6)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}x'))
 
-legend = ax.legend(loc='upper left', framealpha=0.2, fontsize=10,
-                   labelcolor='white', facecolor='#111111', edgecolor='#333333')
+ax.legend(loc='upper left', framealpha=0.2, fontsize=10,
+          labelcolor='white', facecolor='#111111', edgecolor='#333333')
 
 plt.tight_layout()
 plt.savefig('assets/equity_curve.png', dpi=150, bbox_inches='tight',
             facecolor=fig.get_facecolor())
-print("Saved: assets/equity_curve.png")
+print("\nSaved: assets/equity_curve.png")
