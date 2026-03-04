@@ -1,3 +1,16 @@
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
+
+# Data (too large for git)
+data/
+
+# Generated output logs
+output_*.txt
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Saved model artifacts
+*.pkl

@@ -1,0 +1,28 @@
+horizon_bars: 4
+
+walk_forward:
+  n_folds: 8
+  train_pct: 0.20
+  valid_pct: 0.10
+  step_pct: 0.10
+
+# Tree models: no lagged returns (they extract it themselves from return_48/96)
+features:
+  - return_1
+  - return_4
+  - return_48
+  - return_96
+  - volatility_48
+  - max_volatility_480
+  - rsi
+  - price_to_sma20
+  - price_to_sma50
+  - sma_cross
+  - price_to_ema20
+  - close_to_max_240
+  - close_to_max_2400
+  - volume_ratio
+  - volume_to_max_240
+  - volume_to_max_480
+  - force
+  - roc_20

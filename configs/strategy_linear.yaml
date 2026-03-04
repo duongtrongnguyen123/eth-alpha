@@ -1,0 +1,28 @@
+horizon_bars: 4
+
+walk_forward:
+  n_folds: 8
+  train_pct: 0.20
+  valid_pct: 0.10
+  step_pct: 0.10
+
+# Linear models: explicit lagged returns + return_2, no redundant SMA features
+features:
+  - return_1
+  - return_4
+  - return_48
+  - return_4_lag48    # 2h momentum seen 24h ago
+  - return_4_lag96    # 2h momentum seen 48h ago
+  - volatility_48
+  - max_volatility_480
+  - rsi
+  - price_to_sma20
+  - price_to_sma50
+  - sma_cross
+  - price_to_ema20
+  - close_to_max_240
+  - volume_ratio
+  - volume_to_max_240
+  - volume_to_max_480
+  - force
+  - roc_20
