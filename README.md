@@ -1,33 +1,65 @@
 # ETHUSDT ML Trading Strategy
 
-Machine learning strategy for ETHUSDT on 30-minute bars. Predicts 2-hour (4-bar) forward returns using walk-forward validation across 2019–2025 data.
+Machine learning strategy for ETHUSDT on 30-minute bars. Predicts 2-hour (4-bar) forward returns using walk-forward validation across 2019–2026 data.
 
 Designed for **live trading with realistic transaction costs** (2–5 bps/side). All reported results are out-of-sample.
 
 ---
 
-## Results (fee-adjusted)
+## Improvement Story
 
 ![Equity Curve](assets/equity_curve.png)
 
-**Final strategy: LGB + ElasticNet ensemble · Dynamic hold · ER > 0.6 filter · 95th percentile threshold**
+Starting from the theoretical no-fee ceiling, each step brings the strategy closer to live-trading reality:
 
-| Fee scenario | Sharpe | Annual Return | Max Drawdown | Trades/yr |
+| Step | Sharpe | What changed |
+|---|---|---|
+| No-fee ceiling (fixed hold) | 2.04 | Raw signal quality, ~2,000 trades/yr |
+| → Dynamic hold · 5 bps | 1.11 | Exit when model conviction gone, ~100 trades/yr |
+| → + ER > 0.6 filter · 5 bps | **1.29** | Only trade trending regimes, ~60 trades/yr |
+| Buy & Hold | 0.73 | Benchmark |
+
+---
+
+## Validation
+
+Three independent test layers, all out-of-sample:
+
+### 1. Walk-forward (2021–2024)
+Params selected on first 80% of data via walk-forward. 8 folds, sliding window, 20% train → 10% validate.
+
+| | Sharpe | Ann Return | Max DD | RT/yr |
 |---|---|---|---|---|
-| **2 bps/side (maker)** | **1.40** | **49.1%** | **-25.4%** | **60** |
-| **5 bps/side (taker)** | **1.29** | **43.8%** | **-25.6%** | **60** |
-| 10 bps/side | 1.10 | 35.3% | -25.8% | 60 |
-| Buy & Hold | 0.73 | 29.9% | — | — |
+| Dynamic hold · 5 bps | 1.02 | 43.0% | -38.3% | 114 |
+| **+ ER > 0.6 filter · 5 bps** | **1.13** | **35.2%** | **-21.9%** | **58** |
+| Buy & Hold | 0.73 | — | — | — |
 
-> All metrics are out-of-sample, 8 walk-forward folds (2021–2025).
-> MDD is computed on the full continuous 4.6-year equity curve.
+**Fold stability (ER filter, 5 bps):**
 
-**Stability across 8 folds @ 5 bps:**
-
-| | Mean Sharpe | Std | Min (worst fold) |
+| Mean Sharpe | Std | Min (worst fold) | All positive? |
 |---|---|---|---|
-| Ensemble + ER filter | 1.11 | **0.82** | -0.37 |
-| Ensemble (no filter) | 1.07 | 1.03 | -0.50 |
+| 1.37 | 0.61 | 0.35 | Yes |
+
+### 2. Holdout test (Dec 2024 – Mar 2026)
+Last 20% of full dataset, never touched during param selection.
+
+| | Sharpe | Ann Return | Max DD |
+|---|---|---|---|
+| **+ ER > 0.6 filter · 5 bps** | **1.64** | **56.5%** | **-31.2%** |
+| Buy & Hold | -0.34 | — | — |
+
+### 3. Live evaluation (Aug 2025 – Mar 2026)
+![Live Eval](assets/live_eval.png)
+
+New data fetched after model development. ETH fell ~60% from Aug 2025 peak during this period.
+
+| | Sharpe | Ann Return | Max DD |
+|---|---|---|---|
+| **+ ER > 0.6 filter · 5 bps** | **2.03** | **+68.8%** | **-8.6%** |
+| Dynamic hold (no filter) · 5 bps | 0.54 | +13.8% | -24.3% |
+| Buy & Hold | -1.89 | -79.0% | -63.8% |
+
+> ER filter sat out most of the crash — only 37 round-trips over 7 months while ETH lost 79% annualised.
 
 ---
 
@@ -139,32 +171,35 @@ Averaging their z-scored predictions smooths out each model's bad folds.
 ## Project Structure
 
 ```
-qproj/
+eth-alpha/
 ├── data/
-│   └── ETHUSDT.csv                    # Raw 30-min OHLCV (2019–2025, ~100k bars)
+│   └── ETHUSDT.csv                    # Raw 30-min OHLCV (2019–2026, ~110k bars)
 ├── src/
 │   ├── features.py                    # generate_features(), get_data()
 │   ├── signals.py                     # build_position_dynamic(), build_position_filtered()
 │   ├── backtest.py                    # evaluate_holdN(cost_bps=)
-│   ├── models.py                      # All 6 model definitions
+│   ├── models.py                      # All model definitions
 │   └── walk_forward.py                # run_walk_forward(), eva_full_result()
 ├── configs/
 │   ├── strategy_lgb.yaml              # Tree model features (18)
 │   └── strategy_linear.yaml           # Linear model features (19, +lags)
 ├── assets/
-│   └── equity_curve.png               # No-fee equity curve chart
+│   ├── equity_curve.png               # Improvement story plot
+│   └── live_eval.png                  # Live evaluation plot
 │
 ├── run_er_filter.py                   # ★ Final strategy: ER filter + dynamic hold
+├── run_live_eval.py                   # ★ Live evaluation Aug 2025 → Mar 2026
+├── run_clean_split.py                 # ★ Clean 80/20 split validation
+├── run_holdout_test.py                # Holdout test: confirm no overfit
+├── fetch_new_data.py                  # Fetch latest OHLCV from Binance
+├── run_plot_equity.py                 # Generate improvement story chart
 ├── run_dynamic_threshold_sweep.py     # Threshold sweep for dynamic hold
 ├── run_costs.py                       # Cost sweep across all models
 ├── run_best.py                        # Best standalone models
-├── run_ensemble_lgb_elastic.py        # Ensemble baseline (no-fee)
-├── run_plot_equity.py                 # Generate equity curve chart
 ├── run_feature_importance.py          # LightGBM feature importance
 ├── run_signal_corr.py                 # Signal correlation between models
 ├── run_stability.py                   # Per-fold Sharpe stability
-├── run_pred_quality.py                # Prediction quality diagnostic
-└── run_rolling_horizon.py             # Rolling horizon exit experiment
+└── run_pred_quality.py                # Prediction quality diagnostic
 ```
 
 ---
@@ -172,20 +207,25 @@ qproj/
 ## Quick Start
 
 ```bash
-pip install pandas numpy scikit-learn lightgbm xgboost pyyaml scipy matplotlib
+pip install pandas numpy scikit-learn lightgbm xgboost pyyaml scipy matplotlib requests
+
+# Fetch latest data (extends dataset to current date)
+python fetch_new_data.py
 
 # ★ Final strategy with transaction costs
 python run_er_filter.py
 
+# ★ Live evaluation on Aug 2025 → Mar 2026
+python run_live_eval.py
+
+# Clean 80/20 split (params from first 80%, test on last 20%)
+python run_clean_split.py
+
+# Holdout test (confirm no overfit to dev period)
+python run_holdout_test.py
+
 # Cost sweep to see fee sensitivity
 python run_costs.py
-
-# Threshold sweep for dynamic hold
-python run_dynamic_threshold_sweep.py
-
-# No-fee baseline
-python run_ensemble_lgb_elastic.py
-python run_best.py
 ```
 
 ---
@@ -195,5 +235,5 @@ python run_best.py
 - **No slippage modeled** — live performance will be lower for large sizes
 - **No position sizing** — raw signal evaluation; vol-targeting would reduce MDD further
 - ER filter based on 10-bar lookback — longer lookback (e.g. 20) could be more stable
-- 2019–2020 data is training-only; all reported metrics are 2021–2025 OOS
-- The -25% MDD of the final strategy still requires capital discipline in live trading
+- 2019–2020 data is training-only; all reported metrics are 2021+ OOS
+- The live eval period (Aug 2025–Mar 2026) was not used in any parameter selection
