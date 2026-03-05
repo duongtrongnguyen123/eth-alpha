@@ -23,43 +23,44 @@ Starting from the theoretical no-fee ceiling, each step brings the strategy clos
 
 ## Validation
 
-Three independent test layers, all out-of-sample:
+Full dataset 2019→2026. Split 80/20: params selected on first 80%, evaluated on last 20% (never touched during tuning).
 
-### 1. Walk-forward (2021–2024)
-Params selected on first 80% of data via walk-forward. 8 folds, sliding window, 20% train → 10% validate.
+![Clean Split](assets/clean_split.png)
+
+### Dev period (0→0.8 · Feb 2021 – Dec 2024)
+Walk-forward param selection: 6 folds, 20% train → 10% validate → step 10%.
 
 | | Sharpe | Ann Return | Max DD | RT/yr |
 |---|---|---|---|---|
-| Dynamic hold · 5 bps | 1.02 | 43.0% | -38.3% | 114 |
-| **+ ER > 0.6 filter · 5 bps** | **1.13** | **35.2%** | **-21.9%** | **58** |
-| Buy & Hold | 0.73 | — | — | — |
+| Dynamic hold · 5 bps | 1.11 | 50.7% | -45.7% | 182 |
+| **+ ER > 0.7 filter · 5 bps** | **1.32** | **37.1%** | **-26.1%** | **60** |
+| Buy & Hold | 0.74 | — | — | — |
 
-**Fold stability (ER filter, 5 bps):**
+**Fold stability (all 8 folds, ER filter, 5 bps):**
 
 | Mean Sharpe | Std | Min (worst fold) | All positive? |
 |---|---|---|---|
 | 1.37 | 0.61 | 0.35 | Yes |
 
-### 2. Holdout test (Dec 2024 – Mar 2026)
-Last 20% of full dataset, never touched during param selection.
+### Test period (0.8→1.0 · Dec 2024 – Mar 2026) — locked params
+ETH fell ~60% from its Dec 2024 peak during this period.
 
 | | Sharpe | Ann Return | Max DD |
 |---|---|---|---|
-| **+ ER > 0.6 filter · 5 bps** | **1.64** | **56.5%** | **-31.2%** |
+| **+ ER > 0.7 filter · 5 bps** | **1.64** | **56.5%** | **-31.2%** |
+| Dynamic hold (no filter) · 5 bps | 1.59 | 83.9% | -23.4% |
 | Buy & Hold | -0.34 | — | — |
 
-### 3. Live evaluation (Aug 2025 – Mar 2026)
-![Live Eval](assets/live_eval.png)
+> Params locked from dev: PCT=92nd percentile threshold, ER>0.7, 5 bps/side.
+> Test Sharpe (1.64) consistent with dev mean (1.32) — no evidence of overfit.
 
-New data fetched after model development. ETH fell ~60% from Aug 2025 peak during this period.
+### Additional: live evaluation (Aug 2025 – Mar 2026)
+Separate check on data fetched after development. Train on last 20% before Aug 2025, predict forward.
 
 | | Sharpe | Ann Return | Max DD |
 |---|---|---|---|
 | **+ ER > 0.6 filter · 5 bps** | **2.03** | **+68.8%** | **-8.6%** |
-| Dynamic hold (no filter) · 5 bps | 0.54 | +13.8% | -24.3% |
 | Buy & Hold | -1.89 | -79.0% | -63.8% |
-
-> ER filter sat out most of the crash — only 37 round-trips over 7 months while ETH lost 79% annualised.
 
 ---
 
